@@ -1,0 +1,297 @@
+import random
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+import time
+
+# Globals
+player_x, player_y = 250, 50  # Initial position of the player's car
+enemy_cars = []  # List of enemy cars [x, y]
+collectibles = []  # List of collectibles [x, y]
+bonus_items = []  # List of bonus items [x, y]
+score = 0  # Player's score
+car_speed = 5  # Speed of enemy cars
+speed_increment = 3  # Speed increment per 200 points
+paused = False  # Pause state
+immunity = False  # Immunity state
+immunity_start_time = 0  # Time when immunity started
+window_width, window_height = 500, 500
+
+# Function to draw a point
+def draw_points(x, y):
+    glBegin(GL_POINTS)
+    glVertex2f(x, y)
+    glEnd()
+
+# Midpoint Circle Algorithm
+def draw_circle(xc, yc, r):
+    x = 0
+    y = r
+    p = 1 - r
+    while x <= y:
+        draw_points(xc + x, yc + y)
+        draw_points(xc - x, yc + y)
+        draw_points(xc + x, yc - y)
+        draw_points(xc - x, yc - y)
+        draw_points(xc + y, yc + x)
+        draw_points(xc - y, yc + x)
+        draw_points(xc + y, yc - x)
+        draw_points(xc - y, yc - x)
+        if p < 0:
+            p += 2 * x + 3
+        else:
+            p += 2 * (x - y) + 5
+            y -= 1
+        x += 1
+
+# Midpoint Line Algorithm
+def draw_line(x1, y1, x2, y2):
+    dx = x2 - x1
+    dy = y2 - y1
+    d = 2 * dy - dx
+    incrE = 2 * dy
+    incrNE = 2 * (dy - dx)
+    x = x1
+    y = y1
+    draw_points(x, y)
+    while x < x2:
+        if d <= 0:
+            d += incrE
+        else:
+            d += incrNE
+            y += 1
+        x += 1
+        draw_points(x, y)
+
+# Draw a car using GL_POINTS and circles
+def draw_car(x, y):
+    for i in range(-15, 16):
+        for j in range(-20, 21):
+            draw_points(x + j, y + i)
+    draw_circle(x - 15, y - 20, 5)
+    draw_circle(x + 15, y - 20, 5)
+
+# Draw the Restart button (circular arrow)
+def draw_restart_button(x, y):
+    glColor3f(0.0, 0.5, 0.0)  # Dark Green color
+    draw_circle(x + 15, y + 10, 10)  # Outer circle
+    draw_line(x + 5, y + 10, x + 15, y + 20)  # Arrow line
+    draw_line(x + 15, y + 20, x + 25, y + 10)  # Arrow tip
+
+# Draw the Pause/Play button
+def draw_pause_play_button(x, y, paused):
+    glColor3f(0.0, 0.0, 0.5)  # Dark Blue color
+    draw_circle(x + 15, y + 10, 10)  # Outer circle
+    if not paused:
+        draw_line(x + 10, y + 5, x + 10, y + 15)
+        draw_line(x + 10, y + 5, x + 20, y + 10)
+        draw_line(x + 10, y + 15, x + 20, y + 10)
+    else:
+        draw_line(x + 10, y + 5, x + 10, y + 15)
+        draw_line(x + 20, y + 5, x + 20, y + 15)
+
+# Draw the Exit button (circular with a cross)
+def draw_exit_button(x, y):
+    glColor3f(0.5, 0.0, 0.0)  # Dark Red color
+    draw_circle(x + 15, y + 10, 10)  # Outer circle
+    draw_line(x + 10, y + 5, x + 20, y + 15)  # Diagonal line
+    draw_line(x + 20, y + 5, x + 10, y + 15)  # Diagonal line
+
+# Draw the player's car
+def draw_player_car():
+    glColor3f(0.0, 1.0, 0.0)  # Green color
+    draw_car(player_x, player_y)
+
+# Draw the enemy cars
+def draw_enemy_cars():
+    glColor3f(1.0, 0.0, 0.0)  # Red color
+    for car in enemy_cars:
+        draw_car(car[0], car[1])
+
+# Draw the collectibles
+def draw_collectibles():
+    glColor3f(1.0, 1.0, 0.0)  # Yellow color
+    for col in collectibles:
+        draw_circle(col[0], col[1], 5)
+
+# Draw the bonus items
+def draw_bonus_items():
+    glColor3f(0.0, 0.0, 1.0)  # Blue color
+    for item in bonus_items:
+        draw_circle(item[0], item[1], 5)
+
+# Move the enemy cars downward
+def move_enemy_cars():
+    global score, car_speed
+    for car in enemy_cars[:]:
+        car[1] -= car_speed
+        if car[1] < 0:  # If car moves off-screen
+            enemy_cars.remove(car)
+            score += 10
+            if score % 200 == 0:  # Increase speed every 200 points
+                car_speed += speed_increment
+
+# Move the collectibles downward
+def move_collectibles():
+    for col in collectibles[:]:
+        col[1] -= car_speed
+        if col[1] < 0:  # Remove if off-screen
+            collectibles.remove(col)
+
+# Move the bonus items downward
+def move_bonus_items():
+    for item in bonus_items[:]:
+        item[1] -= car_speed
+        if item[1] < 0:  # Remove if off-screen
+            bonus_items.remove(item)
+
+# Check for collision with enemy cars
+def check_collision():
+    global player_x, player_y, immunity
+
+    if immunity:
+        return  # Skip collision checks if immune
+
+    player_width = 40  # Total width (20 to the left, 20 to the right)
+    player_height = 30  # Total height (15 up, 15 down)
+
+    for car in enemy_cars:
+        enemy_x, enemy_y = car[0], car[1]
+        enemy_width = 40  # Width of the enemy car
+        enemy_height = 30  # Height of the enemy car
+
+        if (player_x - player_width / 2 < enemy_x + enemy_width / 2 and
+            player_x + player_width / 2 > enemy_x - enemy_width / 2 and
+            player_y - player_height / 2 < enemy_y + enemy_height / 2 and
+            player_y + player_height / 2 > enemy_y - enemy_height / 2):
+            print("Game Over!")
+            print(f"Final Score: {score}")
+            glutLeaveMainLoop()
+
+# Check for collision with collectibles
+def check_collectibles():
+    global score
+    for col in collectibles[:]:
+        if abs(player_x - col[0]) < 20 and abs(player_y - col[1]) < 20:
+            collectibles.remove(col)
+            score += 50
+
+# Check for collision with bonus items
+def check_bonus_items():
+    global immunity, immunity_start_time
+    for item in bonus_items[:]:
+        if abs(player_x - item[0]) < 20 and abs(player_y - item[1]) < 20:
+            bonus_items.remove(item)
+            immunity = True
+            immunity_start_time = time.time()  # Start the immunity timer
+
+# Generate enemy cars at random positions
+def generate_enemy_car():
+    if random.randint(1, 50) == 1:  # Random chance of generating a car
+        enemy_cars.append([random.randint(50, window_width - 50), window_height])
+
+# Generate collectibles at random positions
+def generate_collectible():
+    if random.randint(1, 100) == 1:  # Random chance of generating a collectible
+        collectibles.append([random.randint(50, window_width - 50), window_height])
+
+# Generate bonus items at random positions
+def generate_bonus_item():
+    if random.randint(1, 200) == 1:  # Random chance of generating a bonus item
+        bonus_items.append([random.randint(50, window_width - 50), window_height])
+
+# Handle mouse clicks
+def mouse_click(button, state, x, y):
+    global paused, player_x, player_y, score, car_speed, enemy_cars, collectibles, bonus_items
+    if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
+        if 10 <= x <= 110 and window_height - 30 <= window_height - y <= window_height:  # Restart button
+            player_x, player_y = 250, 50
+            enemy_cars.clear()
+            collectibles.clear()
+            bonus_items.clear()  # Clear bonus items on restart
+            score = 0
+            car_speed = 5
+            paused = False  # Ensure game is unpaused when restarted
+            global immunity
+            immunity = False  # Reset immunity state
+        elif 195 <= x <= 295 and window_height - 30 <= window_height - y <= window_height:  # Pause button
+            paused = not paused  # Toggle pause state
+            showScreen()  # Force redraw for immediate visual feedback
+        elif 390 <= x <= 490 and window_height - 30 <= window_height - y <= window_height:  # Exit button
+            glutLeaveMainLoop()
+
+# Keyboard controls for player movement
+def keyboard(key, x, y):
+    global player_x, player_y
+    step = 10  # Step size for movement
+    if key == b'w' and player_y + step < window_height:  # Move up
+        player_y += step
+    elif key == b's' and player_y - step > 0:  # Move down
+        player_y -= step
+    elif key == b'a' and player_x - step > 0:  # Move left
+        player_x -= step
+    elif key == b'd' and player_x + step < window_width:  # Move right
+        player_x += step
+
+# Main display function
+def showScreen():
+    global score, paused, immunity
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+    iterate()
+
+    # Draw buttons
+    draw_restart_button(10, window_height - 30)
+    draw_pause_play_button(195, window_height - 30, paused)
+    draw_exit_button(390, window_height - 30)
+
+    if not paused:
+        draw_player_car()
+        draw_enemy_cars()
+        draw_collectibles()
+        draw_bonus_items()  # Draw bonus items
+        move_enemy_cars()
+        move_collectibles()
+        move_bonus_items()  # Move bonus items
+        check_collision()
+        check_collectibles()
+        check_bonus_items()  # Check for bonus item collisions
+        generate_enemy_car()
+        generate_collectible()
+        generate_bonus_item()  # Generate bonus items
+
+    # Check immunity duration
+    if immunity and time.time() - immunity_start_time > 5:  # 5 seconds immunity
+        immunity = False  # Reset immunity
+
+    glColor3f(1.0, 1.0, 1.0)
+    draw_text(f"Score: {score}", 10, window_height - 50)
+    glutSwapBuffers()
+
+# Function to draw text on the screen
+def draw_text(text, x, y):
+    glRasterPos2f(x, y)
+    for char in text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
+
+# Window setup and main loop
+def iterate():
+    glViewport(0, 0, 500, 500)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    glOrtho(0.0, 500, 0.0, 500, 0.0, 1.0)
+    glMatrixMode(GL_MODELVIEW)
+
+def main():
+    glutInit()
+    glutInitDisplayMode(GLUT_RGBA)
+    glutInitWindowSize(window_width, window_height)
+    glutInitWindowPosition(0, 0)
+    wind = glutCreateWindow(b"Car Dose")
+    glutDisplayFunc(showScreen)
+    glutIdleFunc(showScreen)
+    glutMouseFunc(mouse_click)
+    glutKeyboardFunc(keyboard)
+    glutMainLoop()
+
+main()
